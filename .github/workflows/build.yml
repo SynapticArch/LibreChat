@@ -114,5 +114,6 @@ jobs:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           CONTAINER_NAMES: ${{ secrets.CONTAINER_NAMES }}
           IMAGE_URL: happyclo/librechat:${{ steps.timestamp.outputs.short_sha }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
           node scripts/deploy_image.js
