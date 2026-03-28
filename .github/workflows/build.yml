@@ -74,24 +74,39 @@ jobs:
             happyclo/librechat:${{ github.ref_name }}
             happyclo/librechat:${{ steps.timestamp.outputs.short_sha }}
       
-      - name: Set up Python 3
-        uses: actions/setup-python@main
+      - name: Use Node.js
+        uses: actions/setup-node@main
         with:
-          python-version: "3.13"
+          node-version: 22
 
-      - name: Cache Python packages
+      - name: Set Node.js memory limits
+        run: |
+          echo "NODE_OPTIONS=--max-old-space-size=5096" >> $GITHUB_ENV
+          echo "NPM_CONFIG_CACHE=/tmp/.npm" >> $GITHUB_ENV
+
+      - name: Cache Node.js packages
         uses: actions/cache@main
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-node-
 
-      - name: Install paramiko library
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install Node.js dependencies
         run: |
-          pip install paramiko python-dotenv requests logging
+          pnpm install ssh2 dotenv axios form-data
+
+      - name: Set script permissions
+        run: |
+          chmod +x scripts/deploy_image.js
 
       - name: Run deployment script
+        if: github.event_name != 'pull_request' || github.actor == 'Chloemlla'
         env:
           SERVER_ADDRESS: ${{ secrets.SERVER_ADDRESS }}
           USERNAME: ${{ secrets.USERNAME }}
@@ -100,4 +115,4 @@ jobs:
           CONTAINER_NAMES: ${{ secrets.CONTAINER_NAMES }}
           IMAGE_URL: happyclo/librechat:${{ steps.timestamp.outputs.short_sha }}
         run: |
-          python /home/runner/work/${{ steps.timestamp.outputs.repo_name }}/${{ steps.timestamp.outputs.repo_name }}/.github/workflows/deploy_image.py
+          node scripts/deploy_image.js
