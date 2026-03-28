@@ -8,29 +8,32 @@ const express = require('express');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const { logger } = require('@librechat/data-schemas');
 const mongoSanitize = require('express-mongo-sanitize');
+const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   isEnabled,
+  apiNotFound,
   ErrorController,
+  memoryDiagnostics,
   performStartupChecks,
   handleJsonParseError,
-  initializeFileStorage,
   GenerationJobManager,
   createStreamServices,
+  initializeFileStorage,
+  updateInterfacePermissions,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
+const { getRoleByName, updateAccessPermissions, seedDatabase } = require('~/models');
+const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
-const { updateInterfacePermissions } = require('~/models/interface');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
-const { seedDatabase } = require('~/models');
 const routes = require('./routes');
 
 const { PORT, HOST, ALLOW_SOCIAL_LOGIN, DISABLE_COMPRESSION, TRUST_PROXY } = process.env ?? {};
@@ -57,10 +60,12 @@ const startServer = async () => {
   app.set('trust proxy', trusted_proxy);
 
   await seedDatabase();
-  const appConfig = await getAppConfig();
+  const appConfig = await getAppConfig({ baseOnly: true });
   initializeFileStorage(appConfig);
-  await performStartupChecks(appConfig);
-  await updateInterfacePermissions(appConfig);
+  await runAsSystem(async () => {
+    await performStartupChecks(appConfig);
+    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+  });
 
   const indexPath = path.join(appConfig.paths.dist, 'index.html');
   let indexHTML = fs.readFileSync(indexPath, 'utf8');
@@ -131,10 +136,16 @@ const startServer = async () => {
     await configureSocialLogins(app);
   }
 
+  /* Per-request capability cache — must be registered before any route that calls hasCapability */
+  app.use(capabilityContextMiddleware);
+
   app.use('/oauth', routes.oauth);
   /* API Endpoints */
   app.use('/api/auth', routes.auth);
   app.use('/api/admin', routes.adminAuth);
+  app.use('/api/admin/config', routes.adminConfig);
+  app.use('/api/admin/groups', routes.adminGroups);
+  app.use('/api/admin/roles', routes.adminRoles);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);
@@ -162,8 +173,10 @@ const startServer = async () => {
   app.use('/api/tags', routes.tags);
   app.use('/api/mcp', routes.mcp);
 
-  app.use(ErrorController);
+  /** 404 for unmatched API routes */
+  app.use('/api', apiNotFound);
 
+  /** SPA fallback - serve index.html for all unmatched routes */
   app.use((req, res) => {
     res.set({
       'Cache-Control': process.env.INDEX_CACHE_CONTROL || 'no-cache, no-store, must-revalidate',
@@ -179,6 +192,9 @@ const startServer = async () => {
     res.send(updatedIndexHtml);
   });
 
+  /** Error handler (must be last - Express identifies error middleware by its 4-arg signature) */
+  app.use(ErrorController);
+
   app.listen(port, host, async (err) => {
     if (err) {
       logger.error('Failed to start server:', err);
@@ -193,14 +209,21 @@ const startServer = async () => {
       logger.info(`Server listening at http://${host == '0.0.0.0' ? 'localhost' : host}:${port}`);
     }
 
-    await initializeMCPs();
-    await initializeOAuthReconnectManager();
+    await runAsSystem(async () => {
+      await initializeMCPs();
+      await initializeOAuthReconnectManager();
+    });
     await checkMigrations();
 
     // Configure stream services (auto-detects Redis from USE_REDIS env var)
     const streamServices = createStreamServices();
     GenerationJobManager.configure(streamServices);
     GenerationJobManager.initialize();
+
+    const inspectFlags = process.execArgv.some((arg) => arg.startsWith('--inspect'));
+    if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
+      memoryDiagnostics.start();
+    }
   });
 };
 
