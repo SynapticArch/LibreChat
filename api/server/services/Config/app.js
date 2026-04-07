@@ -29,20 +29,10 @@ const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfi
   getUserPrincipals: db.getUserPrincipals,
 });
 
-/** Deletes the ENDPOINT_CONFIG entry from CONFIG_STORE. Failures are non-critical and swallowed. */
-async function clearEndpointConfigCache() {
-  try {
-    const configStore = getLogStores(CacheKeys.CONFIG_STORE);
-    await configStore.delete(CacheKeys.ENDPOINT_CONFIG);
-  } catch {
-    // CONFIG_STORE or ENDPOINT_CONFIG may not exist — not critical
-  }
-}
-
 /**
  * Invalidate all config-related caches after an admin config mutation.
  * Clears the base config, per-principal override caches, tool caches,
- * the endpoints config cache, and the MCP config-source server cache.
+ * and the MCP config-source server cache.
  * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
  */
 async function invalidateConfigCaches(tenantId) {
@@ -50,14 +40,12 @@ async function invalidateConfigCaches(tenantId) {
     clearAppConfigCache(),
     clearOverrideCache(tenantId),
     invalidateCachedTools({ invalidateGlobal: true }),
-    clearEndpointConfigCache(),
     clearMcpConfigCache(),
   ]);
   const labels = [
     'clearAppConfigCache',
     'clearOverrideCache',
     'invalidateCachedTools',
-    'clearEndpointConfigCache',
     'clearMcpConfigCache',
   ];
   for (let i = 0; i < results.length; i++) {

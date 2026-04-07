@@ -1,4 +1,11 @@
+import type { AppConfig } from '@librechat/data-schemas';
 import { createAppConfigService } from './service';
+
+/** Extends AppConfig with mock fields used by merge behavior tests. */
+interface TestConfig extends AppConfig {
+  restricted?: boolean;
+  x?: string;
+}
 
 /**
  * Creates a mock cache that simulates Keyv's namespace behavior.
@@ -18,14 +25,16 @@ function createMockCache(namespace = 'app_config') {
       return Promise.resolve(true);
     }),
     /** Mimic Keyv's opts.store structure for key enumeration in clearOverrideCache */
-    opts: { store: { keys: () => store.keys() } },
+    opts: { store: { keys: () => store.keys() } } as {
+      store?: { keys: () => IterableIterator<string> };
+    },
     _store: store,
   };
 }
 
 function createDeps(overrides = {}) {
   const cache = createMockCache();
-  const baseConfig = { interface: { endpointsMenu: true }, endpoints: ['openAI'] };
+  const baseConfig = { interfaceConfig: { modelSelect: true }, endpoints: ['openAI'] };
 
   return {
     loadBaseConfig: jest.fn().mockResolvedValue(baseConfig),
@@ -70,7 +79,7 @@ describe('createAppConfigService', () => {
         getApplicableConfigs: jest
           .fn()
           .mockResolvedValue([
-            { priority: 10, overrides: { interface: { endpointsMenu: false } }, isActive: true },
+            { priority: 10, overrides: { interface: { modelSelect: false } }, isActive: true },
           ]),
       });
       const { getAppConfig } = createAppConfigService(deps);
@@ -116,15 +125,16 @@ describe('createAppConfigService', () => {
         getApplicableConfigs: jest
           .fn()
           .mockResolvedValue([
-            { priority: 10, overrides: { interface: { endpointsMenu: false } }, isActive: true },
+            { priority: 10, overrides: { interface: { modelSelect: false } }, isActive: true },
           ]),
       });
       const { getAppConfig } = createAppConfigService(deps);
 
       const config = await getAppConfig({ role: 'ADMIN' });
 
-      expect(config.interface.endpointsMenu).toBe(false);
-      expect(config.endpoints).toEqual(['openAI']);
+      const merged = config as TestConfig;
+      expect(merged.interfaceConfig?.modelSelect).toBe(false);
+      expect(merged.endpoints).toEqual(['openAI']);
     });
 
     it('caches merged result with TTL', async () => {
@@ -199,7 +209,7 @@ describe('createAppConfigService', () => {
       const config = await getAppConfig({ role: 'ADMIN' });
 
       expect(mockGetConfigs).toHaveBeenCalledTimes(2);
-      expect((config as Record<string, unknown>).restricted).toBe(true);
+      expect((config as TestConfig).restricted).toBe(true);
     });
 
     it('does not short-circuit other users when one user has no overrides', async () => {
@@ -216,7 +226,7 @@ describe('createAppConfigService', () => {
       const config = await getAppConfig({ role: 'ADMIN' });
 
       expect(mockGetConfigs).toHaveBeenCalledTimes(2);
-      expect((config as Record<string, unknown>).x).toBe('admin-only');
+      expect((config as TestConfig).x).toBe('admin-only');
     });
 
     it('falls back to base config on getApplicableConfigs error', async () => {

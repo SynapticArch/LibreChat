@@ -1,10 +1,4 @@
-import type {
-  PrincipalType,
-  PrincipalModel,
-  TCustomConfig,
-  z,
-  configSchema,
-} from 'librechat-data-provider';
+import type { PrincipalType, PrincipalModel, TCustomConfig } from 'librechat-data-provider';
 import type { SystemCapabilities } from '~/admin/capabilities';
 
 /* ── Capability types ───────────────────────────────────────────────── */
@@ -16,7 +10,7 @@ export type BaseSystemCapability = (typeof SystemCapabilities)[keyof typeof Syst
 export type ConfigAssignTarget = 'user' | 'group' | 'role';
 
 /** Top-level keys of the configSchema from librechat.yaml. */
-export type ConfigSection = keyof z.infer<typeof configSchema>;
+export type ConfigSection = string & keyof TCustomConfig;
 
 /** Section-level config capabilities derived from configSchema keys. */
 type ConfigSectionCapability = `manage:configs:${ConfigSection}` | `read:configs:${ConfigSection}`;
@@ -117,10 +111,24 @@ export type AdminMember = {
   joinedAt?: string;
 };
 
+/** Full user info returned by the admin user list endpoint. */
+export type AdminUserListItem = {
+  id: string;
+  name: string;
+  username: string;
+  email: string;
+  avatar: string;
+  role: string;
+  provider: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 /** Minimal user info returned by user search endpoints. */
 export type AdminUserSearchResult = {
-  userId: string;
+  id: string;
   name: string;
   email: string;
+  username?: string;
   avatarUrl?: string;
 };
