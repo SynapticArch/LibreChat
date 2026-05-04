@@ -6,7 +6,53 @@ const DEFAULT_THINKING_BUDGET = 2000;
 
 const bedrockReasoningConfigValues = new Set<string>(Object.values(s.BedrockReasoningConfig));
 
-type ThinkingConfig = { type: 'enabled'; budget_tokens: number } | { type: 'adaptive' };
+type ThinkingConfig =
+  | { type: 'enabled'; budget_tokens: number }
+  | { type: 'adaptive'; display?: s.ThinkingDisplayWireValue };
+
+/**
+ * Resolves the final `thinking.display` value for an adaptive-thinking request.
+ *
+ * Starting with Claude Opus 4.7, the Messages API returns empty `thinking`
+ * blocks unless the request sets `thinking.display`. This helper encodes the
+ * three user-facing modes — `'auto'` (LibreChat decides), `'summarized'`, and
+ * `'omitted'` — into the wire value (or `undefined` when the field should be
+ * left off).
+ *
+ * See https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
+ */
+/**
+ * Safely extracts a nested `thinking.display` string from a persisted
+ * `additionalModelRequestFields` object, returning `undefined` if the shape
+ * isn't what we expect.
+ */
+function extractPersistedDisplay(amrf: unknown): string | undefined {
+  if (typeof amrf !== 'object' || amrf === null) {
+    return undefined;
+  }
+  const thinking = (amrf as Record<string, unknown>).thinking;
+  if (typeof thinking !== 'object' || thinking === null) {
+    return undefined;
+  }
+  const display = (thinking as Record<string, unknown>).display;
+  return typeof display === 'string' ? display : undefined;
+}
+
+export function resolveThinkingDisplay(
+  model: string,
+  explicit?: s.ThinkingDisplay | string | null,
+): s.ThinkingDisplayWireValue | undefined {
+  if (explicit === s.ThinkingDisplay.summarized) {
+    return s.ThinkingDisplay.summarized;
+  }
+  if (explicit === s.ThinkingDisplay.omitted) {
+    return s.ThinkingDisplay.omitted;
+  }
+  if (omitsThinkingByDefault(model)) {
+    return s.ThinkingDisplay.summarized;
+  }
+  return undefined;
+}
 
 type AnthropicReasoning = {
   thinking?: ThinkingConfig | boolean;
@@ -70,10 +116,28 @@ export function supportsAdaptiveThinking(model: string): boolean {
   return false;
 }
 
-/** Checks if a model qualifies for the context-1m beta header (Sonnet 4+, Opus 4.6+, Opus 5+) */
+/**
+ * Checks if a model omits `thinking` content from responses by default.
+ *
+ * Starting with Claude Opus 4.7, the Messages API returns empty `thinking`
+ * blocks unless the request explicitly opts in via `thinking.display =
+ * "summarized"`. This helper narrows the opt-in to Opus 4.7+ (and any future
+ * major Opus version) so older adaptive-thinking models are left untouched.
+ *
+ * See https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
+ */
+export function omitsThinkingByDefault(model: string): boolean {
+  const opus = parseOpusVersion(model);
+  if (opus && (opus.major > 4 || (opus.major === 4 && opus.minor >= 7))) {
+    return true;
+  }
+  return false;
+}
+
+/** Checks if a model has a 1M context window (Sonnet 4.6+, Opus 4.6+, Opus 5+) */
 export function supportsContext1m(model: string): boolean {
   const sonnet = parseSonnetVersion(model);
-  if (sonnet != null && sonnet.major >= 4) {
+  if (sonnet != null && (sonnet.major > 4 || (sonnet.major === 4 && sonnet.minor >= 6))) {
     return true;
   }
   const opus = parseOpusVersion(model);
@@ -87,7 +151,7 @@ export function supportsContext1m(model: string): boolean {
  * Gets the appropriate anthropic_beta headers for Bedrock Anthropic models.
  * Bedrock uses `anthropic_beta` (with underscore) in additionalModelRequestFields.
  *
- * @param model - The Bedrock model identifier (e.g., "anthropic.claude-sonnet-4-20250514-v1:0")
+ * @param model - The Bedrock model identifier (e.g., "anthropic.claude-sonnet-4-6")
  * @returns Array of beta header strings, or empty array if not applicable
  */
 function getBedrockAnthropicBetaHeaders(model: string): string[] {
@@ -99,15 +163,8 @@ function getBedrockAnthropicBetaHeaders(model: string): string[] {
       model,
     );
 
-  const isSonnet4PlusModel =
-    /anthropic\.claude-(?:sonnet-[4-9]|[4-9](?:\.\d+)?(?:-\d+)?-sonnet)/.test(model);
-
   if (isClaudeThinkingModel) {
     betaHeaders.push('output-128k-2025-02-19');
-  }
-
-  if (isSonnet4PlusModel || supportsAdaptiveThinking(model)) {
-    betaHeaders.push('context-1m-2025-08-07');
   }
 
   return betaHeaders;
@@ -136,6 +193,7 @@ export const bedrockInputSchema = s.tConversationSchema
     thinking: true,
     thinkingBudget: true,
     effort: true,
+    thinkingDisplay: true,
     reasoning_effort: true,
     promptCache: true,
     /* Catch-all fields */
@@ -151,6 +209,15 @@ export const bedrockInputSchema = s.tConversationSchema
         typeof thinking === 'object' && 'budget_tokens' in thinking
           ? thinking.budget_tokens
           : undefined;
+      if (obj.thinkingDisplay == null) {
+        const persistedDisplay = extractPersistedDisplay({ thinking });
+        if (
+          persistedDisplay === s.ThinkingDisplay.summarized ||
+          persistedDisplay === s.ThinkingDisplay.omitted
+        ) {
+          obj.thinkingDisplay = persistedDisplay as s.ThinkingDisplay;
+        }
+      }
       delete obj.additionalModelRequestFields;
     }
     return s.removeNullishValues(obj);
@@ -181,6 +248,7 @@ export const bedrockInputParser = s.tConversationSchema
     thinking: true,
     thinkingBudget: true,
     effort: true,
+    thinkingDisplay: true,
     reasoning_effort: true,
     promptCache: true,
     /* Catch-all fields */
@@ -242,9 +310,33 @@ export const bedrockInputParser = s.tConversationSchema
         if (additionalFields.thinking === false) {
           delete additionalFields.thinking;
           delete additionalFields.thinkingBudget;
+          delete additionalFields.thinkingDisplay;
         } else {
-          additionalFields.thinking = { type: 'adaptive' };
+          /**
+           * Persisted agent `model_parameters` round-trip back through this
+           * parser with the prior `thinking.display` embedded in
+           * `additionalModelRequestFields`. Surface it as the resolver's
+           * explicit value when no top-level `thinkingDisplay` is set so the
+           * prior user choice (e.g. 'omitted') survives instead of being
+           * clobbered by the Opus 4.7+ auto → 'summarized' fallback.
+           */
+          const topLevelDisplay = additionalFields.thinkingDisplay as
+            | s.ThinkingDisplay
+            | string
+            | null
+            | undefined;
+          const persistedDisplay = extractPersistedDisplay(typedData.additionalModelRequestFields);
+          const thinkingConfig: ThinkingConfig = { type: 'adaptive' };
+          const display = resolveThinkingDisplay(
+            typedData.model as string,
+            topLevelDisplay ?? persistedDisplay,
+          );
+          if (display) {
+            thinkingConfig.display = display;
+          }
+          additionalFields.thinking = thinkingConfig;
           delete additionalFields.thinkingBudget;
+          delete additionalFields.thinkingDisplay;
         }
       } else {
         if (additionalFields.thinking === undefined) {
@@ -258,6 +350,7 @@ export const bedrockInputParser = s.tConversationSchema
           additionalFields.thinkingBudget = DEFAULT_THINKING_BUDGET;
         }
         delete additionalFields.effort;
+        delete additionalFields.thinkingDisplay;
       }
 
       /** Anthropic uses 'effort' via output_config, not reasoning_config */
@@ -273,6 +366,7 @@ export const bedrockInputParser = s.tConversationSchema
       delete additionalFields.thinking;
       delete additionalFields.thinkingBudget;
       delete additionalFields.effort;
+      delete additionalFields.thinkingDisplay;
       delete additionalFields.output_config;
       delete additionalFields.anthropic_beta;
 
