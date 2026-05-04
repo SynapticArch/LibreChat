@@ -87,12 +87,115 @@ function createSpawnError(commandLabel, cwd, error) {
   );
 }
 
-function collectDependencyNames(manifest) {
-  return Array.from(
-    new Set(
-      DEPENDENCY_FIELDS.flatMap((field) => Object.keys(manifest[field] ?? {}))
-    )
-  ).sort((left, right) => left.localeCompare(right));
+function collectWorkspacePackageNames(manifestRecords) {
+  return new Set(
+    manifestRecords
+      .map(({ manifest }) =>
+        typeof manifest?.name === 'string' ? manifest.name.trim() : ''
+      )
+      .filter((name) => name.length > 0)
+  );
+}
+
+function collectWorkspaceDependencyChanges(manifest, workspacePackageNames) {
+  const changes = [];
+
+  for (const field of DEPENDENCY_FIELDS) {
+    const dependencies = manifest[field];
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+      continue;
+    }
+
+    for (const [dependencyName, dependencyRange] of Object.entries(dependencies)) {
+      if (!workspacePackageNames.has(dependencyName)) {
+        continue;
+      }
+
+      if (dependencyRange === 'workspace:*') {
+        continue;
+      }
+
+      if (dependencyRange !== '*') {
+        continue;
+      }
+
+      changes.push({
+        field,
+        name: dependencyName,
+        beforeRange: dependencyRange,
+        afterRange: 'workspace:*',
+      });
+    }
+  }
+
+  return changes;
+}
+
+function applyWorkspaceDependencyRanges(manifest, workspacePackageNames) {
+  const changes = [];
+
+  for (const field of DEPENDENCY_FIELDS) {
+    const dependencies = manifest[field];
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+      continue;
+    }
+
+    for (const [dependencyName, dependencyRange] of Object.entries(dependencies)) {
+      if (!workspacePackageNames.has(dependencyName)) {
+        continue;
+      }
+
+      if (dependencyRange === 'workspace:*') {
+        continue;
+      }
+
+      if (dependencyRange !== '*') {
+        continue;
+      }
+
+      dependencies[dependencyName] = 'workspace:*';
+      changes.push({
+        field,
+        name: dependencyName,
+        beforeRange: dependencyRange,
+        afterRange: 'workspace:*',
+      });
+    }
+  }
+
+  return changes;
+}
+
+function partitionDependencyNames(manifest, workspacePackageNames) {
+  const dependencyNames = [];
+  const skippedDependencyNames = [];
+  const seenDependencyNames = new Set();
+  const seenSkippedDependencyNames = new Set();
+
+  for (const field of DEPENDENCY_FIELDS) {
+    for (const dependencyName of Object.keys(manifest[field] ?? {})) {
+      if (workspacePackageNames.has(dependencyName)) {
+        if (!seenSkippedDependencyNames.has(dependencyName)) {
+          seenSkippedDependencyNames.add(dependencyName);
+          skippedDependencyNames.push(dependencyName);
+        }
+        continue;
+      }
+
+      if (!seenDependencyNames.has(dependencyName)) {
+        seenDependencyNames.add(dependencyName);
+        dependencyNames.push(dependencyName);
+      }
+    }
+  }
+
+  dependencyNames.sort((left, right) => left.localeCompare(right));
+  skippedDependencyNames.sort((left, right) => left.localeCompare(right));
+
+  return {
+    dependencyNames,
+    skippedDependencyNames,
+  };
 }
 
 function collectDependencyCounts(manifest) {
@@ -243,10 +346,14 @@ async function rewriteManifest(packageJsonPath, manifest) {
 function createPnpmExecutor(target) {
   const executePnpm = (command, commandArgs, commandLabel) =>
     new Promise((resolve, reject) => {
+      const env = {
+        ...process.env,
+        npm_config_package_manager_strict: 'false',
+      };
       const child = spawn(command, commandArgs, {
         cwd: target.dir,
         stdio: 'inherit',
-        env: process.env,
+        env,
         shell: IS_WINDOWS,
         windowsHide: true,
       });
@@ -591,13 +698,28 @@ async function collectPackageJsonPaths(directoryPath) {
 
 async function discoverTargets() {
   const packageJsonPaths = await collectPackageJsonPaths(ROOT_DIR);
+  const manifestRecords = await Promise.all(
+    packageJsonPaths.sort((left, right) => left.localeCompare(right)).map(
+      async (packageJsonPath) => ({
+        packageJsonPath,
+        manifest: await readManifest(packageJsonPath),
+      })
+    )
+  );
+  const workspacePackageNames = collectWorkspacePackageNames(manifestRecords);
   const targets = [];
 
-  for (const packageJsonPath of packageJsonPaths.sort((left, right) => left.localeCompare(right))) {
-    const manifest = await readManifest(packageJsonPath);
-    const dependencyNames = collectDependencyNames(manifest);
+  for (const { packageJsonPath, manifest } of manifestRecords) {
+    const workspaceDependencyChanges = collectWorkspaceDependencyChanges(
+      manifest,
+      workspacePackageNames
+    );
+    const {
+      dependencyNames,
+      skippedDependencyNames,
+    } = partitionDependencyNames(manifest, workspacePackageNames);
 
-    if (dependencyNames.length === 0) {
+    if (dependencyNames.length === 0 && skippedDependencyNames.length === 0) {
       continue;
     }
 
@@ -608,6 +730,9 @@ async function discoverTargets() {
       packageJsonLabel: path.relative(ROOT_DIR, packageJsonPath) || MANIFEST_FILENAME,
       lockfilePath: path.join(directoryPath, 'pnpm-lock.yaml'),
       dependencyNames,
+      skippedDependencyNames,
+      workspaceDependencyChanges,
+      workspacePackageNames,
       dependencyCounts: collectDependencyCounts(manifest),
       beforeSnapshot: cloneDependencySnapshot(manifest),
       beforeOverrideSnapshot: cloneOverrideSnapshot(manifest),
@@ -642,9 +767,28 @@ async function discoverRustTarget() {
 
 async function runPnpmUpgrade(target, options = {}) {
   const runPnpmCommand = createPnpmExecutor(target);
+  if (target.workspaceDependencyChanges.length > 0) {
+    const nextManifest = await readManifest(target.packageJsonPath);
+    const workspaceDependencyChanges = applyWorkspaceDependencyRanges(
+      nextManifest,
+      target.workspacePackageNames
+    );
+
+    if (workspaceDependencyChanges.length > 0) {
+      await rewriteManifest(target.packageJsonPath, nextManifest);
+    }
+
+    console.log(
+      `  - Normalized ${target.workspaceDependencyChanges.length} local workspace dependenc${target.workspaceDependencyChanges.length === 1 ? 'y' : 'ies'} to workspace:* references.`
+    );
+  }
 
   if (!options.repairOnly) {
-    await runPnpmCommand(['up', '--latest', ...target.dependencyNames]);
+    if (target.dependencyNames.length > 0) {
+      await runPnpmCommand(['up', '--latest', ...target.dependencyNames]);
+    } else {
+      console.log('  - No registry dependencies were eligible for pnpm up --latest after skipping local workspace packages.');
+    }
   }
 
   const nextManifest = await readManifest(target.packageJsonPath);
@@ -711,10 +855,14 @@ async function runRustUpgrade(target) {
   printAction(target.dir, 'cargo', args);
 
   await new Promise((resolve, reject) => {
+    const env = {
+      ...process.env,
+      npm_config_package_manager_strict: 'false',
+    };
     const child = spawn(CARGO_COMMAND, args, {
       cwd: target.dir,
       stdio: 'inherit',
-      env: process.env,
+      env,
       shell: IS_WINDOWS,
       windowsHide: true,
     });
@@ -751,7 +899,7 @@ async function verifyTarget(target) {
     : '<no local pnpm-lock.yaml>';
 
   console.log(
-    `[ok] ${target.packageJsonLabel} -> ${target.dependencyNames.length} dependencies inspected, ${changedRanges.length} ranges updated, ${changedOverrides.length} override fix${changedOverrides.length === 1 ? '' : 'es'}, lockfile: ${lockfileLabel}`
+    `[ok] ${target.packageJsonLabel} -> ${target.dependencyNames.length} registry dependencies inspected${target.skippedDependencyNames.length > 0 ? `, ${target.skippedDependencyNames.length} local workspace dependencies skipped` : ''}, ${changedRanges.length} ranges updated, ${changedOverrides.length} override fix${changedOverrides.length === 1 ? '' : 'es'}, lockfile: ${lockfileLabel}`
   );
 
   if (changedRanges.length > 0) {
@@ -763,6 +911,10 @@ async function verifyTarget(target) {
     }
   } else {
     console.log('  - Already at the newest published ranges or no manifest rewrite was necessary.');
+  }
+
+  if (target.skippedDependencyNames.length > 0) {
+    console.log(`  - Skipped local workspace dependencies: ${target.skippedDependencyNames.join(', ')}`);
   }
 
   if (changedOverrides.length > 0) {
