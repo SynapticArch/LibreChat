@@ -419,26 +419,6 @@ async function runNpmUpgrade(target, options = {}) {
   }
 }
 
-  const nextManifest = await readManifest(target.packageJsonPath);
-  const pinnedRangeChanges = applyPinnedDependencyRanges(target, nextManifest);
-  const overrideChanges = normalizePnpmOverrides(nextManifest);
-
-  if (pinnedRangeChanges.length > 0 || overrideChanges.length > 0) {
-    hasChanges = true;
-    await rewriteManifest(target.packageJsonPath, nextManifest, options.dryRun);
-    if (pinnedRangeChanges.length > 0) console.log(`${colors.green}  - Reapplied ${pinnedRangeChanges.length} pinned dependency range(s).${colors.reset}`);
-    if (overrideChanges.length > 0) console.log(`${colors.green}  - Normalized ${overrideChanges.length} pnpm override(s).${colors.reset}`);
-  }
-
-  // 4. 智能过滤无意义的工作 (Smart Diff)
-  if (hasChanges) {
-    const finalArgs = ['install', '--package-lock-only', '--legacy-peer-deps'];
-    printAction(ROOT_DIR, 'npm', finalArgs, options.dryRun);
-    await executeCommand(ROOT_DIR, NPM_COMMAND, finalArgs, `Final npm install for ${target.packageJsonLabel}`, options.dryRun);
-  } else {
-    console.log(`${colors.green}  - Smart Diff: No changes detected, skipping install.${colors.reset}`);
-}
-  
 async function runPnpmUpgrade(target, options = {}) {
   const runPnpmCommand = createPnpmExecutor(target, options.dryRun);
   let hasChanges = false;
