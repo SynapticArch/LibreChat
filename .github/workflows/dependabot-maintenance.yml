@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/dependabot-maintenance.yml"
-      - "scripts/fix-dependabot-alerts.js"
+      - '.github/workflows/dependabot-maintenance.yml'
+      - 'scripts/fix-dependabot-alerts.js'
   workflow_dispatch:
     inputs:
       action:
@@ -37,13 +37,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 'latest'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: pnpm
+          node-version: 'latest'
+          cache: npm
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -68,7 +68,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Run selected maintenance action
         env:

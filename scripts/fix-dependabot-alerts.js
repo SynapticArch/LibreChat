@@ -14,6 +14,7 @@ const MANIFEST_FILENAME = 'package.json';
 const CARGO_MANIFEST_FILENAME = 'Cargo.toml';
 const CARGO_LOCK_FILENAME = 'Cargo.lock';
 const PNPM_COMMAND = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+const NPM_COMMAND = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const COREPACK_COMMAND = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
 const CARGO_COMMAND = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
 const IS_WINDOWS = process.platform === 'win32';
@@ -161,6 +162,30 @@ function executeCommand(cwd, command, commandArgs, commandLabel) {
       );
     });
   });
+}
+
+async function getPackageManager() {
+  try {
+    const rootManifestPath = path.join(ROOT_DIR, MANIFEST_FILENAME);
+    if (existsSync(rootManifestPath)) {
+      const rootManifestText = await readFile(rootManifestPath, 'utf8');
+      const rootManifest = JSON.parse(rootManifestText);
+      if (rootManifest.packageManager && rootManifest.packageManager.startsWith('npm')) {
+        return 'npm';
+      }
+      if (rootManifest.packageManager && rootManifest.packageManager.startsWith('pnpm')) {
+        return 'pnpm';
+      }
+    }
+  } catch (error) {
+    // 忽略解析错误，回退到基于锁文件的检测
+  }
+
+  if (existsSync(path.join(ROOT_DIR, 'package-lock.json'))) {
+    return 'npm';
+  }
+
+  return 'pnpm'; // 默认回退
 }
 
 function collectDependencyNames(manifest) {
@@ -381,6 +406,112 @@ function createPnpmExecutor(target) {
       }
     }
   };
+}
+
+// 检查依赖是否符合 npm @latest 更新的要求
+function shouldUpgradeNpmDependency(range) {
+  if (!range) return false;
+  if (range === '*') return false;
+  if (range.startsWith('workspace:')) return false;
+  if (range.startsWith('file:')) return false;
+  if (range.startsWith('link:')) return false;
+  if (/^(git\+|http|https):\/\//.test(range)) return false;
+  return true;
+}
+
+async function runJsUpgrade(target, options = {}, packageManager) {
+  if (packageManager === 'npm') {
+    await runNpmUpgrade(target, options);
+  } else {
+    await runPnpmUpgrade(target, options);
+  }
+}
+
+async function runNpmUpgrade(target, options = {}) {
+  const isRoot = target.dir === ROOT_DIR;
+  
+  if (!options.repairOnly) {
+    const manifest = await readManifest(target.packageJsonPath);
+    const dependenciesToUpgrade = [];
+
+    for (const field of DEPENDENCY_FIELDS) {
+      const deps = manifest[field] || {};
+      for (const [name, range] of Object.entries(deps)) {
+        if (shouldUpgradeNpmDependency(range)) {
+          dependenciesToUpgrade.push(`${name}@latest`);
+        }
+      }
+    }
+
+    if (dependenciesToUpgrade.length > 0) {
+      // 在 npm 中，推荐在根目录加上 workspace 参数来统筹升级并更新根 package-lock.json
+      const args = ['install', '--package-lock-only', '--legacy-peer-deps', ...dependenciesToUpgrade];
+      if (!isRoot) {
+        const relativePath = path.relative(ROOT_DIR, target.dir);
+        args.push(`--workspace=${relativePath}`);
+      }
+
+      printAction(ROOT_DIR, 'npm', args);
+      try {
+        await executeCommand(ROOT_DIR, NPM_COMMAND, args, `npm install for ${target.packageJsonLabel}`);
+      } catch (e) {
+        console.warn(`  - [Warning] npm install failed for specific versions, falling back to basic npm update.`);
+        const updateArgs = ['update', '--package-lock-only'];
+        if (!isRoot) updateArgs.push(`--workspace=${path.relative(ROOT_DIR, target.dir)}`);
+        await executeCommand(ROOT_DIR, NPM_COMMAND, updateArgs, `npm update for ${target.packageJsonLabel}`);
+      }
+    }
+  }
+
+  const nextManifest = await readManifest(target.packageJsonPath);
+  const pinnedRangeChanges = applyPinnedDependencyRanges(target, nextManifest);
+  const overrideChanges = normalizePnpmOverrides(nextManifest); // 仅针对 pnpm.overrides
+
+  if (pinnedRangeChanges.length > 0 || overrideChanges.length > 0) {
+    await rewriteManifest(target.packageJsonPath, nextManifest);
+    if (pinnedRangeChanges.length > 0) {
+      console.log(
+        `  - Reapplied ${pinnedRangeChanges.length} pinned dependency range${pinnedRangeChanges.length === 1 ? '' : 's'}.`
+      );
+    }
+    if (overrideChanges.length > 0) {
+      console.log(
+        `  - Normalized ${overrideChanges.length} overlapping pnpm override${overrideChanges.length === 1 ? '' : 's'} to $dependency references.`
+      );
+    }
+    
+    // 如果修改了文件，重新生成 lockfile
+    const finalArgs = ['install', '--package-lock-only', '--legacy-peer-deps'];
+    await executeCommand(ROOT_DIR, NPM_COMMAND, finalArgs, `Final npm install for ${target.packageJsonLabel}`);
+  }
+}
+
+async function runPnpmUpgrade(target, options = {}) {
+  const runPnpmCommand = createPnpmExecutor(target);
+
+  if (!options.repairOnly) {
+    await runPnpmCommand(['up', '--latest', '--lockfile-only', ...target.dependencyNames]);
+  }
+
+  const nextManifest = await readManifest(target.packageJsonPath);
+  const pinnedRangeChanges = applyPinnedDependencyRanges(target, nextManifest);
+  const overrideChanges = normalizePnpmOverrides(nextManifest);
+
+  if (pinnedRangeChanges.length > 0 || overrideChanges.length > 0) {
+    await rewriteManifest(target.packageJsonPath, nextManifest);
+    if (pinnedRangeChanges.length > 0) {
+      console.log(
+        `  - Reapplied ${pinnedRangeChanges.length} pinned dependency range${pinnedRangeChanges.length === 1 ? '' : 's'}.`
+      );
+    }
+    if (overrideChanges.length > 0) {
+      console.log(
+        `  - Normalized ${overrideChanges.length} overlapping pnpm override${overrideChanges.length === 1 ? '' : 's'} to $dependency references.`
+      );
+    }
+  }
+
+  await runPnpmCommand(['install', '--lockfile-only']);
 }
 
 function isRustDependencySection(sectionName) {
@@ -705,9 +836,10 @@ function filterTargetsByCliArgs(targets, cliArgs) {
   });
 }
 
-async function discoverTargets() {
+async function discoverTargets(packageManager) {
   const packageJsonPaths = await collectPackageJsonPaths(ROOT_DIR);
   const targets = [];
+  const lockfileName = packageManager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml';
 
   for (const packageJsonPath of packageJsonPaths.sort((left, right) => left.localeCompare(right))) {
     const manifest = await readManifest(packageJsonPath);
@@ -722,7 +854,7 @@ async function discoverTargets() {
       dir: directoryPath,
       packageJsonPath,
       packageJsonLabel: path.relative(ROOT_DIR, packageJsonPath) || MANIFEST_FILENAME,
-      lockfilePath: path.join(directoryPath, 'pnpm-lock.yaml'),
+      lockfilePath: path.join(directoryPath, lockfileName), // 或者指向根目录的锁文件
       dependencyNames,
       dependencyCounts: collectDependencyCounts(manifest),
       beforeSnapshot: cloneDependencySnapshot(manifest),
@@ -754,32 +886,6 @@ async function discoverRustTarget() {
     dependencyCounts: collectRustDependencyCounts(dependencyEntries),
     beforeManifestText: manifestText,
   };
-}
-
-async function runPnpmUpgrade(target, options = {}) {
-  const runPnpmCommand = createPnpmExecutor(target);
-
-  if (!options.repairOnly) {
-    await runPnpmCommand(['up', '--latest', '--lockfile-only', ...target.dependencyNames]);
-  }
-
-  const nextManifest = await readManifest(target.packageJsonPath);
-  const pinnedRangeChanges = applyPinnedDependencyRanges(target, nextManifest);
-  const overrideChanges = normalizePnpmOverrides(nextManifest);
-
-  if (pinnedRangeChanges.length > 0 || overrideChanges.length > 0) {
-    await rewriteManifest(target.packageJsonPath, nextManifest);
-    if (pinnedRangeChanges.length > 0) {
-      console.log(
-        `  - Reapplied ${pinnedRangeChanges.length} pinned dependency range${pinnedRangeChanges.length === 1 ? '' : 's'}.`
-      );
-    }
-    console.log(
-      `  - Normalized ${overrideChanges.length} overlapping pnpm override${overrideChanges.length === 1 ? '' : 's'} to $dependency references.`
-    );
-  }
-
-  await runPnpmCommand(['install', '--lockfile-only']);
 }
 
 async function runRustUpgrade(target) {
@@ -840,17 +946,20 @@ async function runRustUpgrade(target) {
   );
 }
 
-async function verifyTarget(target) {
+async function verifyTarget(target, packageManager) {
   const nextManifest = await readManifest(target.packageJsonPath);
   const changedRanges = collectRangeChanges(target.beforeSnapshot, nextManifest);
   const changedOverrides = collectOverrideChanges(
     target.beforeOverrideSnapshot,
     nextManifest
   );
-  const lockfileExists = existsSync(target.lockfilePath);
+  
+  // 对于 npm 的 workspaces，通常锁定文件在根目录
+  const lockfileExists = existsSync(target.lockfilePath) || existsSync(path.join(ROOT_DIR, 'package-lock.json'));
+  const lockfileName = packageManager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml';
   const lockfileLabel = lockfileExists
-    ? path.relative(ROOT_DIR, target.lockfilePath)
-    : '<no local pnpm-lock.yaml>';
+    ? `Root / Local ${lockfileName}`
+    : `<no ${lockfileName} found>`;
 
   console.log(
     `[ok] ${target.packageJsonLabel} -> ${target.dependencyNames.length} dependencies inspected, ${changedRanges.length} ranges updated, ${changedOverrides.length} override fix${changedOverrides.length === 1 ? '' : 'es'}, lockfile: ${lockfileLabel}`
@@ -913,11 +1022,12 @@ async function main() {
       : 'Upgrade Package Dependencies For Dependabot'
   );
 
-  const pnpmTargets = await discoverTargets();
-  const filteredPnpmTargets = filterTargetsByCliArgs(pnpmTargets, cliArgs);
+  const packageManager = await getPackageManager();
+  const jsTargets = await discoverTargets(packageManager);
+  const filteredJsTargets = filterTargetsByCliArgs(jsTargets, cliArgs);
   const rustTarget = await discoverRustTarget();
   const includeRustTarget = !cliArgs.repairOnly && rustTarget;
-  const totalTargets = filteredPnpmTargets.length + (includeRustTarget ? 1 : 0);
+  const totalTargets = filteredJsTargets.length + (includeRustTarget ? 1 : 0);
 
   if (totalTargets === 0) {
     throw new Error(
@@ -928,13 +1038,14 @@ async function main() {
   }
 
   console.log(`Repository root: ${ROOT_DIR}`);
+  console.log(`Package Manager: ${packageManager}`);
   console.log(`Targets: ${totalTargets}`);
   console.log(`Mode: ${cliArgs.repairOnly ? 'repair-only' : 'upgrade'}`);
   if (cliArgs.targets.length > 0) {
     console.log(`Target filter: ${cliArgs.targets.join(', ')}`);
   }
 
-  for (const target of filteredPnpmTargets) {
+  for (const target of filteredJsTargets) {
     console.log(
       `- ${target.packageJsonLabel} (${describeCounts(target.dependencyCounts)})`
     );
@@ -946,19 +1057,19 @@ async function main() {
     );
   }
 
-  for (const [index, target] of filteredPnpmTargets.entries()) {
+  for (const [index, target] of filteredJsTargets.entries()) {
     printSection(
       index + 1,
       totalTargets,
       `${cliArgs.repairOnly ? 'repair' : 'upgrade'} ${target.packageJsonLabel}`
     );
-    await runPnpmUpgrade(target, cliArgs);
-    await verifyTarget(target);
+    await runJsUpgrade(target, cliArgs, packageManager);
+    await verifyTarget(target, packageManager);
   }
 
   if (includeRustTarget) {
     printSection(
-      filteredPnpmTargets.length + 1,
+      filteredJsTargets.length + 1,
       totalTargets,
       `upgrade ${rustTarget.cargoManifestLabel}`
     );
