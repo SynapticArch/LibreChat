@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { webcrypto } = require('node:crypto');
 const {
   logger,
+  getTenantId,
   DEFAULT_SESSION_EXPIRY,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
 } = require('@librechat/data-schemas');
@@ -37,8 +38,6 @@ const {
 } = require('~/models');
 const { registerSchema } = require('~/strategies/validators');
 const { getAppConfig } = require('~/server/services/Config');
-const { getOAuthReconnectionManager } = require('~/config');
-const { verifyTurnstileToken } = require('~/server/services/start/turnstile');
 const { sendEmail } = require('~/server/utils');
 
 const domains = {
@@ -193,13 +192,13 @@ const verifyEmail = async (req) => {
 /**
  * Register a new user.
  * @param {IUser} user <email, password, name, username>
- * @param {Partial<IUser>} [additionalData={}]
+ * @param {Partial<IUser>} [additionalData={}] Trusted server-provided fields, such as CLI overrides.
  * @returns {Promise<{status: number, message: string, user?: IUser}>}
  */
 const registerUser = async (user, additionalData = {}) => {
-  const { error } = registerSchema.safeParse(user);
-  if (error) {
-    const errorMessage = errorsToString(error.errors);
+  const result = registerSchema.safeParse(user);
+  if (!result.success) {
+    const errorMessage = errorsToString(result.error.errors);
     logger.info(
       'Route: register - Validation Error',
       { name: 'Request params:', value: user },
@@ -209,33 +208,13 @@ const registerUser = async (user, additionalData = {}) => {
     return { status: 404, message: errorMessage };
   }
 
-  const { email, password, name, username, provider, turnstileToken } = user;
+  const { email, password, name, username } = result.data;
+  const { provider, ...trustedAdditionalData } = additionalData ?? {};
 
   let newUserId;
   try {
-    const appConfig = await getAppConfig({ baseOnly: true });
-    
-    // Check if Turnstile is enabled before requiring token
-    const turnstileEnabled = !!appConfig?.turnstile?.siteKey;
-    
-    if (turnstileEnabled) {
-      if (!turnstileToken) {
-        logger.warn(`[registerUser] [Missing Turnstile token] [Email: ${email}]`);
-        return { status: 400, message: 'Captcha verification is required.' };
-      }
-      
-      const turnstileResult = await verifyTurnstileToken(turnstileToken);
-      if (!turnstileResult.success || !turnstileResult.verified) {
-        logger.warn(`[registerUser] [Turnstile verification failed] [Email: ${email}]`, {
-          turnstileError: turnstileResult.error
-        });
-        return { status: 400, message: 'Captcha verification failed. Please try again.' };
-      }
-      logger.info(`[registerUser] [Turnstile verification successful] [Email: ${email}]`);
-    } else {
-      logger.debug(`[registerUser] [Turnstile disabled, skipping verification] [Email: ${email}]`);
-    }
-    
+    const tenantId = getTenantId();
+    const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
     if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
       const errorMessage =
         'The email address provided cannot be used. Please use a different email address.';
@@ -269,7 +248,7 @@ const registerUser = async (user, additionalData = {}) => {
       avatar: null,
       role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
       password: bcrypt.hashSync(password, salt),
-      ...additionalData,
+      ...trustedAdditionalData,
     };
 
     const emailEnabled = checkEmailConfig();
@@ -472,6 +451,8 @@ const getCloudFrontAuthCookieSkipReason = (scope) => {
   return null;
 };
 
+const shouldLogCloudFrontAuthCookieSkip = (reason) => reason !== 'cloudfront_disabled';
+
 /**
  * Refreshes CloudFront signed cookies for authenticated image/avatar access.
  * @param {ServerRequest | null} req
@@ -501,15 +482,17 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
   };
   const skipReason = getCloudFrontAuthCookieSkipReason(scope);
   if (skipReason) {
-    logger.debug('[setCloudFrontAuthCookies] CloudFront auth cookies skipped', {
-      attempted: false,
-      set: false,
-      reason: skipReason,
-      has_user_id: Boolean(scope.userId),
-      has_tenant_scope: Boolean(scope.tenantId),
-      has_storage_region: Boolean(scope.storageRegion),
-      has_previous_scope: Boolean(getPreviousCloudFrontScope(req)?.userId),
-    });
+    if (shouldLogCloudFrontAuthCookieSkip(skipReason)) {
+      logger.debug('[setCloudFrontAuthCookies] CloudFront auth cookies skipped', {
+        attempted: false,
+        set: false,
+        reason: skipReason,
+        has_user_id: Boolean(scope.userId),
+        has_tenant_scope: Boolean(scope.tenantId),
+        has_storage_region: Boolean(scope.storageRegion),
+        has_previous_scope: Boolean(getPreviousCloudFrontScope(req)?.userId),
+      });
+    }
     return false;
   }
 
