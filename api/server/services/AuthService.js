@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { webcrypto } = require('node:crypto');
 const {
   logger,
+  getTenantId,
   DEFAULT_SESSION_EXPIRY,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
 } = require('@librechat/data-schemas');
@@ -191,13 +192,13 @@ const verifyEmail = async (req) => {
 /**
  * Register a new user.
  * @param {IUser} user <email, password, name, username>
- * @param {Partial<IUser>} [additionalData={}]
+ * @param {Partial<IUser>} [additionalData={}] Trusted server-provided fields, such as CLI overrides.
  * @returns {Promise<{status: number, message: string, user?: IUser}>}
  */
 const registerUser = async (user, additionalData = {}) => {
-  const { error } = registerSchema.safeParse(user);
-  if (error) {
-    const errorMessage = errorsToString(error.errors);
+  const result = registerSchema.safeParse(user);
+  if (!result.success) {
+    const errorMessage = errorsToString(result.error.errors);
     logger.info(
       'Route: register - Validation Error',
       { name: 'Request params:', value: user },
@@ -207,11 +208,13 @@ const registerUser = async (user, additionalData = {}) => {
     return { status: 404, message: errorMessage };
   }
 
-  const { email, password, name, username, provider } = user;
+  const { email, password, name, username } = result.data;
+  const { provider, ...trustedAdditionalData } = additionalData ?? {};
 
   let newUserId;
   try {
-    const appConfig = await getAppConfig({ baseOnly: true });
+    const tenantId = getTenantId();
+    const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
     if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
       const errorMessage =
         'The email address provided cannot be used. Please use a different email address.';
@@ -245,7 +248,7 @@ const registerUser = async (user, additionalData = {}) => {
       avatar: null,
       role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
       password: bcrypt.hashSync(password, salt),
-      ...additionalData,
+      ...trustedAdditionalData,
     };
 
     const emailEnabled = checkEmailConfig();
@@ -448,6 +451,8 @@ const getCloudFrontAuthCookieSkipReason = (scope) => {
   return null;
 };
 
+const shouldLogCloudFrontAuthCookieSkip = (reason) => reason !== 'cloudfront_disabled';
+
 /**
  * Refreshes CloudFront signed cookies for authenticated image/avatar access.
  * @param {ServerRequest | null} req
@@ -477,15 +482,17 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
   };
   const skipReason = getCloudFrontAuthCookieSkipReason(scope);
   if (skipReason) {
-    logger.debug('[setCloudFrontAuthCookies] CloudFront auth cookies skipped', {
-      attempted: false,
-      set: false,
-      reason: skipReason,
-      has_user_id: Boolean(scope.userId),
-      has_tenant_scope: Boolean(scope.tenantId),
-      has_storage_region: Boolean(scope.storageRegion),
-      has_previous_scope: Boolean(getPreviousCloudFrontScope(req)?.userId),
-    });
+    if (shouldLogCloudFrontAuthCookieSkip(skipReason)) {
+      logger.debug('[setCloudFrontAuthCookies] CloudFront auth cookies skipped', {
+        attempted: false,
+        set: false,
+        reason: skipReason,
+        has_user_id: Boolean(scope.userId),
+        has_tenant_scope: Boolean(scope.tenantId),
+        has_storage_region: Boolean(scope.storageRegion),
+        has_previous_scope: Boolean(getPreviousCloudFrontScope(req)?.userId),
+      });
+    }
     return false;
   }
 
