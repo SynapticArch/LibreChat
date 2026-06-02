@@ -8,9 +8,9 @@ on:
     paths-ignore:
       - .github/**
   workflow_run:
-    workflows: ["Upstream Sync"]  # 监听 Upstream Sync 工作流
+    workflows: ['Upstream Sync'] # 监听 Upstream Sync 工作流
     types:
-      - completed  # 仅在工作流完成时触发
+      - completed # 仅在工作流完成时触发
   workflow_dispatch:
 
 jobs:
@@ -73,7 +73,7 @@ jobs:
           tags: |
             happyclo/librechat:${{ github.ref_name }}
             happyclo/librechat:${{ steps.timestamp.outputs.short_sha }}
-      
+
       - name: Use Node.js
         uses: actions/setup-node@main
         with:
@@ -99,7 +99,7 @@ jobs:
 
       - name: Install Node.js dependencies
         run: |
-          pnpm install ssh2 dotenv axios form-data
+          pnpm add ssh2 dotenv axios form-data
 
       - name: Set script permissions
         run: |
