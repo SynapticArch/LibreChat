@@ -211,6 +211,26 @@ describe('GET /api/config', () => {
       expect(response.body.turnstile).toEqual({ siteKey: 'test-key' });
     });
 
+    it('should expose only public turnstile fields', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        turnstileConfig: {
+          siteKey: 'test-key',
+          secretKey: 'private-secret',
+          options: { language: 'en', theme: 'auto' },
+        },
+      });
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.turnstile).toEqual({
+        siteKey: 'test-key',
+        options: { language: 'en', theme: 'auto' },
+      });
+      expect(response.body.turnstile).not.toHaveProperty('secretKey');
+    });
+
     it('should include only privacyPolicy and termsOfService from interface config', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       const app = createApp(null);
@@ -361,6 +381,26 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.interface).toEqual(baseAppConfig.interfaceConfig);
+    });
+
+    it('should expose only public turnstile fields', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        turnstileConfig: {
+          siteKey: 'test-key',
+          secretKey: 'private-secret',
+          options: { language: 'en', theme: 'auto' },
+        },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.turnstile).toEqual({
+        siteKey: 'test-key',
+        options: { language: 'en', theme: 'auto' },
+      });
+      expect(response.body.turnstile).not.toHaveProperty('secretKey');
     });
 
     it('should include authenticated-only env var fields', async () => {

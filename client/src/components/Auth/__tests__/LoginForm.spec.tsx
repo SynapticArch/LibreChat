@@ -1,4 +1,5 @@
 import { render, getByTestId } from 'test/layout-test-utils';
+import { waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { TStartupConfig } from 'librechat-data-provider';
 import * as endpointQueries from '~/data-provider/Endpoints/queries';
@@ -8,6 +9,60 @@ import * as authQueries from '~/data-provider/Auth/queries';
 import Login from '../LoginForm';
 
 jest.mock('librechat-data-provider/react-query');
+
+const mockTurnstileReset = jest.fn();
+
+jest.mock('@marsidev/react-turnstile', () => {
+  const React = require('react');
+
+  return {
+    Turnstile: React.forwardRef(({ onSuccess, onError, onExpire, siteKey, options }, ref) => {
+      React.useImperativeHandle(ref, () => ({
+        reset: mockTurnstileReset,
+        remove: jest.fn(),
+        render: jest.fn(),
+        execute: jest.fn(),
+        getResponse: jest.fn(),
+        getResponsePromise: jest.fn(),
+        isExpired: jest.fn(),
+      }));
+
+      return React.createElement(
+        'div',
+        { 'data-testid': 'turnstile-widget' },
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            'data-testid': 'turnstile-success',
+            onClick: () => onSuccess('mock-turnstile-token'),
+          },
+          'Complete Captcha',
+        ),
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            'data-testid': 'turnstile-error',
+            onClick: () => onError('test-error'),
+          },
+          'Trigger Error',
+        ),
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            'data-testid': 'turnstile-expire',
+            onClick: () => onExpire('mock-turnstile-token'),
+          },
+          'Expire Token',
+        ),
+        React.createElement('div', { 'data-testid': 'turnstile-sitekey' }, siteKey),
+        React.createElement('div', { 'data-testid': 'turnstile-options' }, JSON.stringify(options)),
+      );
+    }),
+  };
+});
 
 const mockLogin = jest.fn();
 
@@ -36,6 +91,18 @@ const mockStartupConfig: TStartupConfig = {
   checkBalance: false,
   showBirthdayIcon: false,
   helpAndFaqURL: '',
+};
+
+const mockStartupConfigWithTurnstile: TStartupConfig = {
+  ...mockStartupConfig,
+  turnstile: {
+    siteKey: 'test-site-key',
+    options: {
+      language: 'en',
+      size: 'normal',
+      theme: 'auto',
+    },
+  },
 };
 
 const setup = ({
@@ -101,12 +168,18 @@ const setup = ({
 };
 
 beforeEach(() => {
+  jest.clearAllMocks();
   setup();
 });
 
 test('renders login form', () => {
   const { getByLabelText } = render(
-    <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfig}
+      error={undefined}
+      setError={jest.fn()}
+    />,
   );
   expect(getByLabelText(/email/i)).toBeInTheDocument();
   expect(getByLabelText(/password/i)).toBeInTheDocument();
@@ -114,7 +187,12 @@ test('renders login form', () => {
 
 test('submits login form', async () => {
   const { getByLabelText, getByRole } = render(
-    <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfig}
+      error={undefined}
+      setError={jest.fn()}
+    />,
   );
   const emailInput = getByLabelText(/email/i);
   const passwordInput = getByLabelText(/password/i);
@@ -129,7 +207,12 @@ test('submits login form', async () => {
 
 test('displays validation error messages', async () => {
   const { getByLabelText, getByRole, getByText } = render(
-    <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfig}
+      error={undefined}
+      setError={jest.fn()}
+    />,
   );
   const emailInput = getByLabelText(/email/i);
   const passwordInput = getByLabelText(/password/i);
@@ -141,4 +224,67 @@ test('displays validation error messages', async () => {
 
   expect(getByText(/You must enter a valid email address/i)).toBeInTheDocument();
   expect(getByText(/Password must be at least 8 characters/i)).toBeInTheDocument();
+});
+
+test('submits turnstile token when Turnstile is enabled', async () => {
+  const { getByLabelText } = render(
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfigWithTurnstile}
+      error={undefined}
+      setError={jest.fn()}
+    />,
+  );
+  const emailInput = getByLabelText(/email/i);
+  const passwordInput = getByLabelText(/password/i);
+  const submitButton = getByTestId(document.body, 'login-button');
+
+  await userEvent.type(emailInput, 'test@example.com');
+  await userEvent.type(passwordInput, 'password');
+
+  expect(submitButton).toBeDisabled();
+
+  await userEvent.click(getByTestId(document.body, 'turnstile-success'));
+  expect(submitButton).not.toBeDisabled();
+
+  await userEvent.click(submitButton);
+
+  expect(mockLogin).toHaveBeenCalledWith({
+    email: 'test@example.com',
+    password: 'password',
+    turnstileToken: 'mock-turnstile-token',
+  });
+});
+
+test('resets turnstile token when login fails', async () => {
+  const setError = jest.fn();
+  const { getByLabelText, rerender } = render(
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfigWithTurnstile}
+      error={undefined}
+      setError={setError}
+    />,
+  );
+  const emailInput = getByLabelText(/email/i);
+  const passwordInput = getByLabelText(/password/i);
+  const submitButton = getByTestId(document.body, 'login-button');
+
+  await userEvent.type(emailInput, 'test@example.com');
+  await userEvent.type(passwordInput, 'password');
+  await userEvent.click(getByTestId(document.body, 'turnstile-success'));
+
+  expect(submitButton).not.toBeDisabled();
+
+  rerender(
+    <Login
+      onSubmit={mockLogin}
+      startupConfig={mockStartupConfigWithTurnstile}
+      error="Captcha verification failed. Please try again."
+      setError={setError}
+    />,
+  );
+
+  await waitFor(() => expect(mockTurnstileReset).toHaveBeenCalledTimes(1));
+  expect(getByTestId(document.body, 'login-button')).toBeDisabled();
 });

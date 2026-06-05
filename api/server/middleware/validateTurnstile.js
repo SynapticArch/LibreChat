@@ -1,6 +1,8 @@
-const { logger } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { verifyTurnstileToken } = require('~/server/services/start/turnstile');
 const { getAppConfig } = require('~/server/services/Config');
+
+const getTurnstileConfig = (appConfig) => appConfig?.turnstileConfig ?? appConfig?.turnstile;
 
 /**
  * Middleware to validate Turnstile token for login and registration
@@ -12,20 +14,21 @@ const { getAppConfig } = require('~/server/services/Config');
  */
 const validateTurnstile = async (req, res, next) => {
   try {
-    // Get app config to check if Turnstile is enabled
-    const appConfig = getAppConfig();
-    const turnstileEnabled = !!appConfig?.turnstile?.siteKey;
+    const tenantId = getTenantId();
+    const appConfig = await getAppConfig(tenantId ? { tenantId } : { baseOnly: true });
+    const turnstileConfig = getTurnstileConfig(appConfig);
+    const turnstileEnabled = Boolean(turnstileConfig?.siteKey);
 
     const { turnstileToken } = req.body || {};
 
-    // If Turnstile is not enabled, skip validation
     if (!turnstileEnabled) {
       logger.debug('[validateTurnstile] Turnstile is disabled, skipping validation');
       return next();
     }
 
-    // Validate token exists and is a non-empty string
-    if (!turnstileToken || typeof turnstileToken !== 'string' || turnstileToken.trim() === '') {
+    const token = typeof turnstileToken === 'string' ? turnstileToken.trim() : '';
+
+    if (!token) {
       logger.warn('[validateTurnstile] Invalid or missing Turnstile token', {
         ip: req.ip,
         userAgent: req.get('User-Agent'),
@@ -37,10 +40,8 @@ const validateTurnstile = async (req, res, next) => {
       });
     }
 
-    // Verify the Turnstile token
-    const turnstileResult = await verifyTurnstileToken(turnstileToken);
+    const turnstileResult = await verifyTurnstileToken(token);
 
-    // Check if verification was successful
     if (!turnstileResult || !turnstileResult.success || !turnstileResult.verified) {
       const errorDetails = {
         ip: req.ip,
@@ -57,13 +58,12 @@ const validateTurnstile = async (req, res, next) => {
       });
     }
 
-    logger.info('[validateTurnstile] Turnstile verification successful', {
+    logger.debug('[validateTurnstile] Turnstile verification successful', {
       ip: req.ip,
       userAgent: req.get('User-Agent'),
-      tokenLength: turnstileToken.length,
+      tokenLength: token.length,
     });
 
-    // Add verification result to request for downstream use
     req.turnstileVerified = true;
     next();
   } catch (error) {

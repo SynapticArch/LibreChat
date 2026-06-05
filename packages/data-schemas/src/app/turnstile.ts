@@ -2,6 +2,37 @@ import logger from '~/config/winston';
 import { removeNullishValues } from 'librechat-data-provider';
 import type { TCustomConfig, TConfigDefaults } from 'librechat-data-provider';
 
+type TurnstileConfig = NonNullable<TCustomConfig['turnstile']>;
+type TurnstileOptions = NonNullable<TurnstileConfig['options']>;
+type TurnstileSize = TurnstileOptions['size'];
+type TurnstileTheme = TurnstileOptions['theme'];
+
+const turnstileSizes: ReadonlySet<TurnstileSize> = new Set([
+  'normal',
+  'compact',
+  'flexible',
+  'invisible',
+]);
+const turnstileThemes: ReadonlySet<TurnstileTheme> = new Set(['auto', 'light', 'dark']);
+
+function readEnvValue(name: string): string | undefined {
+  return process.env[name]?.trim() || undefined;
+}
+
+function readEnvOption<T extends string>(name: string, values: ReadonlySet<T>): T | undefined {
+  const value = readEnvValue(name);
+  if (!value) {
+    return undefined;
+  }
+
+  if (values.has(value as T)) {
+    return value as T;
+  }
+
+  logger.warn(`[Turnstile] Ignoring invalid ${name}: ${value}`);
+  return undefined;
+}
+
 /**
  * Loads and maps the Cloudflare Turnstile configuration.
  *
@@ -23,12 +54,24 @@ export function loadTurnstileConfig(
 ): Partial<TCustomConfig['turnstile']> {
   const { turnstile: customTurnstile } = config ?? {};
   const { turnstile: defaults } = configDefaults;
+  const envSiteKey = readEnvValue('TURNSTILE_SITE_KEY');
+  const envLanguage = readEnvValue('TURNSTILE_LANGUAGE');
+  const envSize = readEnvOption('TURNSTILE_SIZE', turnstileSizes);
+  const envTheme = readEnvOption('TURNSTILE_THEME', turnstileThemes);
+  const options = removeNullishValues({
+    ...(defaults as TCustomConfig['turnstile'] | undefined)?.options,
+    ...customTurnstile?.options,
+    language: envLanguage,
+    size: envSize,
+    theme: envTheme,
+  });
 
   const loadedTurnstile = removeNullishValues({
     siteKey:
-      customTurnstile?.siteKey ?? (defaults as TCustomConfig['turnstile'] | undefined)?.siteKey,
-    options:
-      customTurnstile?.options ?? (defaults as TCustomConfig['turnstile'] | undefined)?.options,
+      envSiteKey ??
+      customTurnstile?.siteKey ??
+      (defaults as TCustomConfig['turnstile'] | undefined)?.siteKey,
+    options: Object.keys(options).length > 0 ? options : undefined,
   });
 
   const enabled = Boolean(loadedTurnstile.siteKey);

@@ -1,10 +1,11 @@
+import React, { useContext, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import React, { useContext, useState } from 'react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { ThemeContext, SecretInput, Spinner, Button, isDark } from '@librechat/client';
 import { useNavigate, useOutletContext, useLocation } from 'react-router-dom';
 import { useRegisterUserMutation } from 'librechat-data-provider/react-query';
 import { loginPage } from 'librechat-data-provider';
+import type { TurnstileInstance } from '@marsidev/react-turnstile';
 import type { TRegisterUser, TError } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize, TranslationKeys } from '~/hooks';
@@ -28,6 +29,7 @@ const Registration: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [countdown, setCountdown] = useState<number>(3);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>();
 
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
@@ -43,6 +45,11 @@ const Registration: React.FC = () => {
     'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-green-500 rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
   const authSecretButtonClassName =
     'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
+
+  const resetTurnstile = () => {
+    setTurnstileToken(null);
+    turnstileRef.current?.reset();
+  };
 
   const registerUser = useRegisterUserMutation({
     onMutate: () => {
@@ -65,6 +72,7 @@ const Registration: React.FC = () => {
     },
     onError: (error: unknown) => {
       setIsSubmitting(false);
+      resetTurnstile();
       if ((error as TError).response?.data?.message) {
         setErrorMessage((error as TError).response?.data?.message ?? '');
       }
@@ -151,9 +159,17 @@ const Registration: React.FC = () => {
             className="mt-6"
             aria-label="Registration form"
             method="POST"
-            onSubmit={handleSubmit((data: TRegisterUser) =>
-              registerUser.mutate({ ...data, token: token ?? undefined }),
-            )}
+            onSubmit={handleSubmit((data: TRegisterUser) => {
+              if (requireCaptcha && !turnstileToken) {
+                return;
+              }
+
+              registerUser.mutate({
+                ...data,
+                token: token ?? undefined,
+                ...(requireCaptcha && turnstileToken ? { turnstileToken } : {}),
+              });
+            })}
           >
             {renderInput('name', 'com_auth_full_name', 'text', {
               required: localize('com_auth_name_required'),
@@ -210,14 +226,16 @@ const Registration: React.FC = () => {
             {startupConfig?.turnstile?.siteKey && (
               <div className="my-4 flex justify-center">
                 <Turnstile
+                  ref={turnstileRef}
                   siteKey={startupConfig.turnstile.siteKey}
                   options={{
                     ...startupConfig.turnstile.options,
                     theme: validTheme,
                   }}
                   onSuccess={(token) => setTurnstileToken(token)}
-                  onError={() => setTurnstileToken(null)}
-                  onExpire={() => setTurnstileToken(null)}
+                  onError={resetTurnstile}
+                  onExpire={resetTurnstile}
+                  onTimeout={resetTurnstile}
                 />
               </div>
             )}

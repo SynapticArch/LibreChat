@@ -1,12 +1,20 @@
 const { validateTurnstile } = require('../validateTurnstile');
 const { verifyTurnstileToken } = require('~/server/services/start/turnstile');
 const { getAppConfig } = require('~/server/services/Config');
-const { logger } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 
 // Mock dependencies
 jest.mock('~/server/services/start/turnstile');
 jest.mock('~/server/services/Config');
-jest.mock('@librechat/data-schemas');
+jest.mock('@librechat/data-schemas', () => ({
+  logger: {
+    debug: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
+  },
+  getTenantId: jest.fn(),
+}));
 
 describe('validateTurnstile middleware', () => {
   let req, res, next;
@@ -25,24 +33,22 @@ describe('validateTurnstile middleware', () => {
 
     // Reset mocks
     jest.clearAllMocks();
-    logger.debug = jest.fn();
-    logger.warn = jest.fn();
-    logger.info = jest.fn();
-    logger.error = jest.fn();
+    getTenantId.mockReturnValue(undefined);
   });
 
   describe('when Turnstile is disabled', () => {
     beforeEach(() => {
       getAppConfig.mockReturnValue({
-        turnstile: null, // No turnstile config
+        turnstileConfig: null, // No turnstile config
       });
     });
 
     it('should skip validation and call next()', async () => {
       await validateTurnstile(req, res, next);
 
+      expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
       expect(logger.debug).toHaveBeenCalledWith(
-        '[validateTurnstile] Turnstile is disabled, skipping validation'
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
       expect(next).toHaveBeenCalled();
       expect(res.status).not.toHaveBeenCalled();
@@ -54,17 +60,26 @@ describe('validateTurnstile middleware', () => {
       await validateTurnstile(req, res, next);
 
       expect(logger.debug).toHaveBeenCalledWith(
-        '[validateTurnstile] Turnstile is disabled, skipping validation'
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
       expect(next).toHaveBeenCalled();
       expect(verifyTurnstileToken).not.toHaveBeenCalled();
+    });
+
+    it('should load tenant-scoped config when tenant context is present', async () => {
+      getTenantId.mockReturnValue('tenant-abc');
+
+      await validateTurnstile(req, res, next);
+
+      expect(getAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-abc' });
+      expect(next).toHaveBeenCalled();
     });
   });
 
   describe('when Turnstile is enabled', () => {
     beforeEach(() => {
       getAppConfig.mockReturnValue({
-        turnstile: {
+        turnstileConfig: {
           siteKey: 'test-site-key',
         },
       });
@@ -81,7 +96,7 @@ describe('validateTurnstile middleware', () => {
             userAgent: 'test-user-agent',
             tokenProvided: false,
             tokenType: 'undefined',
-          })
+          }),
         );
         expect(res.status).toHaveBeenCalledWith(400);
         expect(res.json).toHaveBeenCalledWith({
@@ -110,7 +125,7 @@ describe('validateTurnstile middleware', () => {
           '[validateTurnstile] Invalid or missing Turnstile token',
           expect.objectContaining({
             tokenType: 'number',
-          })
+          }),
         );
         expect(res.status).toHaveBeenCalledWith(400);
       });
@@ -156,7 +171,7 @@ describe('validateTurnstile middleware', () => {
             success: false,
             verified: false,
             error: 'Invalid token',
-          })
+          }),
         );
         expect(res.status).toHaveBeenCalledWith(400);
         expect(res.json).toHaveBeenCalledWith({
@@ -211,17 +226,36 @@ describe('validateTurnstile middleware', () => {
         await validateTurnstile(req, res, next);
 
         expect(verifyTurnstileToken).toHaveBeenCalledWith('valid-token');
-        expect(logger.info).toHaveBeenCalledWith(
+        expect(logger.debug).toHaveBeenCalledWith(
           '[validateTurnstile] Turnstile verification successful',
           expect.objectContaining({
             ip: '127.0.0.1',
             userAgent: 'test-user-agent',
             tokenLength: 11, // 'valid-token'.length
-          })
+          }),
         );
         expect(req.turnstileVerified).toBe(true);
         expect(next).toHaveBeenCalled();
         expect(res.status).not.toHaveBeenCalled();
+      });
+
+      it('should trim token before verification', async () => {
+        req.body.turnstileToken = '  valid-token  ';
+        verifyTurnstileToken.mockResolvedValue({
+          success: true,
+          verified: true,
+        });
+
+        await validateTurnstile(req, res, next);
+
+        expect(verifyTurnstileToken).toHaveBeenCalledWith('valid-token');
+        expect(logger.debug).toHaveBeenCalledWith(
+          '[validateTurnstile] Turnstile verification successful',
+          expect.objectContaining({
+            tokenLength: 11,
+          }),
+        );
+        expect(next).toHaveBeenCalled();
       });
     });
 
@@ -241,7 +275,7 @@ describe('validateTurnstile middleware', () => {
             ip: '127.0.0.1',
             userAgent: 'test-user-agent',
             errorName: 'Error',
-          })
+          }),
         );
         expect(res.status).toHaveBeenCalledWith(500);
         expect(res.json).toHaveBeenCalledWith({
@@ -262,7 +296,7 @@ describe('validateTurnstile middleware', () => {
           '[validateTurnstile] Error during Turnstile validation:',
           expect.objectContaining({
             error: 'Config error',
-          })
+          }),
         );
         expect(res.status).toHaveBeenCalledWith(500);
       });
@@ -273,7 +307,7 @@ describe('validateTurnstile middleware', () => {
     it('should handle missing req.body', async () => {
       req.body = undefined;
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: 'test-key' },
+        turnstileConfig: { siteKey: 'test-key' },
       });
 
       await validateTurnstile(req, res, next);
@@ -288,7 +322,7 @@ describe('validateTurnstile middleware', () => {
       req.ip = undefined;
       req.body.turnstileToken = 'valid-token';
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: 'test-key' },
+        turnstileConfig: { siteKey: 'test-key' },
       });
       verifyTurnstileToken.mockResolvedValue({
         success: true,
@@ -297,11 +331,11 @@ describe('validateTurnstile middleware', () => {
 
       await validateTurnstile(req, res, next);
 
-      expect(logger.info).toHaveBeenCalledWith(
+      expect(logger.debug).toHaveBeenCalledWith(
         '[validateTurnstile] Turnstile verification successful',
         expect.objectContaining({
           ip: undefined,
-        })
+        }),
       );
       expect(next).toHaveBeenCalled();
     });
@@ -310,7 +344,7 @@ describe('validateTurnstile middleware', () => {
       req.get.mockReturnValue(undefined);
       req.body.turnstileToken = 'valid-token';
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: 'test-key' },
+        turnstileConfig: { siteKey: 'test-key' },
       });
       verifyTurnstileToken.mockResolvedValue({
         success: true,
@@ -319,11 +353,11 @@ describe('validateTurnstile middleware', () => {
 
       await validateTurnstile(req, res, next);
 
-      expect(logger.info).toHaveBeenCalledWith(
+      expect(logger.debug).toHaveBeenCalledWith(
         '[validateTurnstile] Turnstile verification successful',
         expect.objectContaining({
           userAgent: undefined,
-        })
+        }),
       );
       expect(next).toHaveBeenCalled();
     });
@@ -332,40 +366,53 @@ describe('validateTurnstile middleware', () => {
   describe('configuration variations', () => {
     it('should be disabled when siteKey is empty string', async () => {
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: '' },
+        turnstileConfig: { siteKey: '' },
       });
 
       await validateTurnstile(req, res, next);
 
       expect(logger.debug).toHaveBeenCalledWith(
-        '[validateTurnstile] Turnstile is disabled, skipping validation'
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
       expect(next).toHaveBeenCalled();
     });
 
     it('should be disabled when siteKey is null', async () => {
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: null },
+        turnstileConfig: { siteKey: null },
       });
 
       await validateTurnstile(req, res, next);
 
       expect(logger.debug).toHaveBeenCalledWith(
-        '[validateTurnstile] Turnstile is disabled, skipping validation'
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
       expect(next).toHaveBeenCalled();
     });
 
     it('should be enabled when siteKey is present', async () => {
       getAppConfig.mockReturnValue({
-        turnstile: { siteKey: 'valid-site-key' },
+        turnstileConfig: { siteKey: 'valid-site-key' },
       });
 
       await validateTurnstile(req, res, next);
 
       expect(res.status).toHaveBeenCalledWith(400); // Missing token
       expect(logger.debug).not.toHaveBeenCalledWith(
-        '[validateTurnstile] Turnstile is disabled, skipping validation'
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
+      );
+    });
+
+    it('should support legacy turnstile config shape', async () => {
+      getAppConfig.mockReturnValue({
+        turnstile: { siteKey: 'valid-site-key' },
+      });
+
+      await validateTurnstile(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(logger.debug).not.toHaveBeenCalledWith(
+        '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
     });
   });

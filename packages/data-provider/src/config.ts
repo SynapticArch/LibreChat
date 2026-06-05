@@ -1062,10 +1062,12 @@ export const turnstileOptionsSchema = z
   .object({
     language: z.string().default('auto'),
     size: z.enum(['normal', 'compact', 'flexible', 'invisible']).default('normal'),
+    theme: z.enum(['auto', 'light', 'dark']).default('auto'),
   })
   .default({
     language: 'auto',
     size: 'normal',
+    theme: 'auto',
   });
 
 export const turnstileSchema = z.object({

@@ -180,6 +180,17 @@ function buildWebSearchConfig(appConfig) {
   };
 }
 
+function buildPublicTurnstileConfig(turnstileConfig) {
+  if (!turnstileConfig?.siteKey) {
+    return undefined;
+  }
+
+  return {
+    siteKey: turnstileConfig.siteKey,
+    ...(turnstileConfig.options ? { options: turnstileConfig.options } : {}),
+  };
+}
+
 function buildCloudFrontStartupConfig() {
   const config = getCloudFrontConfig();
   if (
@@ -215,7 +226,7 @@ router.get('/', async function (req, res) {
         ...preLoginPayload,
         ...(req.query.context === 'share' ? publicSharePayload : {}),
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
-        turnstile: baseConfig?.turnstileConfig,
+        turnstile: buildPublicTurnstileConfig(baseConfig?.turnstileConfig),
         ...(rum ? { rum } : {}),
       };
 
@@ -258,7 +269,7 @@ router.get('/', async function (req, res) {
       ...buildPostLoginPayload(),
       socialLogins: appConfig?.registration?.socialLogins ?? defaultSocialLogins,
       interface: appConfig?.interfaceConfig,
-      turnstile: appConfig?.turnstileConfig,
+      turnstile: buildPublicTurnstileConfig(appConfig?.turnstileConfig),
       modelSpecs: sanitizeModelSpecs(appConfig?.modelSpecs),
       balance: balanceConfig,
       bundlerURL: process.env.SANDPACK_BUNDLER_URL,
