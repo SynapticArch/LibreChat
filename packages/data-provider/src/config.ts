@@ -63,6 +63,7 @@ export const excludedKeys = new Set([
   'files',
   'spec',
   'disableParams',
+  'chatProjectId',
 ]);
 
 export enum SettingsViews {
@@ -403,6 +404,13 @@ export const baseEndpointSchema = z.object({
     .optional(),
   titleEndpoint: z.string().optional(),
   titlePromptTemplate: z.string().optional(),
+  /**
+   * When conversation titles are generated. `immediate` (default) generates the
+   * title as soon as the request is made, in parallel with the response, from the
+   * user's first message. `final` defers generation until the full response
+   * completes (legacy behavior).
+   */
+  titleTiming: z.union([z.literal('immediate'), z.literal('final')]).optional(),
   /** Maximum characters allowed in a single tool result before truncation. */
   maxToolResultChars: z.number().positive().optional(),
 });
@@ -564,6 +572,11 @@ export const agentsEndpointSchema = baseEndpointSchema
         .array(z.nativeEnum(AgentCapabilities))
         .optional()
         .default(defaultAgentCapabilities),
+      skills: z
+        .object({
+          maxCatalogSkills: z.number().int().min(1).max(100).optional(),
+        })
+        .optional(),
       remoteApi: remoteApiSchema.optional(),
     }),
   )
@@ -662,6 +675,7 @@ export const azureEndpointSchema = z
         titleMethod: true,
         titleModel: true,
         titlePrompt: true,
+        titleTiming: true,
         titlePromptTemplate: true,
       })
       .partial(),
@@ -961,6 +975,7 @@ export const interfaceSchema = z
     temporaryChatRetention: z.number().min(1).max(8760).optional(),
     autoSubmitFromUrl: z.boolean().optional(),
     retentionMode: z.nativeEnum(RetentionMode).default(RetentionMode.TEMPORARY),
+    retainAgentFiles: z.boolean().optional(),
     runCode: z.boolean().optional(),
     webSearch: z.boolean().optional(),
     peoplePicker: z
@@ -995,6 +1010,16 @@ export const interfaceSchema = z
           share: z.boolean().optional(),
           public: z.boolean().optional(),
           defaultActiveOnShare: z.boolean().optional(),
+        }),
+      ])
+      .optional(),
+    sharedLinks: z
+      .union([
+        z.boolean(),
+        z.object({
+          create: z.boolean().optional(),
+          share: z.boolean().optional(),
+          public: z.boolean().optional(),
         }),
       ])
       .optional(),
@@ -1051,6 +1076,11 @@ export const interfaceSchema = z
       share: false,
       public: false,
       defaultActiveOnShare: false,
+    },
+    sharedLinks: {
+      create: true,
+      share: true,
+      public: true,
     },
   });
 
@@ -1131,6 +1161,10 @@ export type TStartupConfig = {
   modelDescriptions?: Record<string, Record<string, string>>;
   sharedLinksEnabled: boolean;
   publicSharedLinksEnabled: boolean;
+  /** Effective default timing for when conversation titles become fetchable.
+   * `immediate` = fetch in parallel with the active stream (default);
+   * `final` = fetch only after the stream completes (legacy). */
+  titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
   bundlerURL?: string;
