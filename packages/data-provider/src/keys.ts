@@ -69,6 +69,10 @@ export enum QueryKeys {
   activeJobs = 'activeJobs',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
+  /* Synapse OAuth */
+  synapseOAuthScopes = 'synapseOAuthScopes',
+  synapseOAuthClients = 'synapseOAuthClients',
+  synapseOAuthGrants = 'synapseOAuthGrants',
   /* Skills */
   skills = 'skills',
   skill = 'skill',
@@ -125,4 +129,9 @@ export enum MutationKeys {
   updateSkillNode = 'updateSkillNode',
   deleteSkillNode = 'deleteSkillNode',
   updateSkillNodeContent = 'updateSkillNodeContent',
+  createSynapseOAuthClient = 'createSynapseOAuthClient',
+  updateSynapseOAuthClient = 'updateSynapseOAuthClient',
+  rotateSynapseOAuthClientSecret = 'rotateSynapseOAuthClientSecret',
+  deleteSynapseOAuthClient = 'deleteSynapseOAuthClient',
+  revokeSynapseOAuthGrant = 'revokeSynapseOAuthGrant',
 }

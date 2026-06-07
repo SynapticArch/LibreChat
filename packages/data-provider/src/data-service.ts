@@ -5,6 +5,7 @@ import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import * as mcp from './types/mcpServers';
 import * as a from './types/assistants';
+import * as oauth from './types/oauth';
 import * as m from './types/mutations';
 import * as ag from './types/agents';
 import * as q from './types/queries';
@@ -114,6 +115,53 @@ export function createAgentApiKey(
 
 export function deleteAgentApiKey(id: string): Promise<void> {
   return request.delete(endpoints.apiKeyById(id));
+}
+
+export function getSynapseOAuthScopes(): Promise<oauth.SynapseOAuthScopesResponse> {
+  return request.get(endpoints.oauthScopes());
+}
+
+export function listSynapseOAuthClients(): Promise<oauth.SynapseOAuthClientsResponse> {
+  return request.get(endpoints.oauthClients());
+}
+
+export function createSynapseOAuthClient(
+  payload: oauth.SynapseOAuthClientInput,
+): Promise<oauth.SynapseOAuthClientResponse> {
+  return request.post(endpoints.oauthClients(), payload);
+}
+
+export function getSynapseOAuthClient(clientId: string): Promise<oauth.SynapseOAuthClientResponse> {
+  return request.get(endpoints.oauthClientById(clientId));
+}
+
+export function updateSynapseOAuthClient(
+  clientId: string,
+  payload: oauth.SynapseOAuthClientInput,
+): Promise<oauth.SynapseOAuthClientResponse> {
+  return request.put(endpoints.oauthClientById(clientId), payload);
+}
+
+export function rotateSynapseOAuthClientSecret(
+  clientId: string,
+): Promise<oauth.SynapseOAuthClientResponse> {
+  return request.post(endpoints.oauthRotateSecret(clientId));
+}
+
+export function deleteSynapseOAuthClient(
+  clientId: string,
+): Promise<oauth.SynapseOAuthMutationResponse> {
+  return request.delete(endpoints.oauthClientById(clientId));
+}
+
+export function listSynapseOAuthGrants(): Promise<oauth.SynapseOAuthGrantsResponse> {
+  return request.get(endpoints.oauthGrants());
+}
+
+export function revokeSynapseOAuthGrant(
+  grantId: string,
+): Promise<oauth.SynapseOAuthMutationResponse> {
+  return request.post(endpoints.oauthRevokeGrant(grantId));
 }
 
 export function getPresets(): Promise<s.TPreset[]> {

@@ -1,5 +1,6 @@
 // file deepcode ignore NoRateLimitingForLogin: Rate limiting is handled by the `loginLimiter` middleware
 const express = require('express');
+const mongoose = require('mongoose');
 const passport = require('passport');
 const { randomState } = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
@@ -8,10 +9,12 @@ const {
   buildOAuthFailureLog,
   createOpenIDCallbackAuthenticator,
   createSetBalanceConfig,
+  createOAuthProviderHandlers,
   getOAuthFailureMessage,
   redirectToAuthFailure,
 } = require('@librechat/api');
 const { checkDomainAllowed, loginLimiter, logHeaders } = require('~/server/middleware');
+const optionalJwtAuth = require('~/server/middleware/optionalJwtAuth');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const { findBalanceByUser, upsertBalanceFields } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
@@ -38,6 +41,7 @@ router.use(logHeaders);
 router.use(loginLimiter);
 
 const oauthHandler = createOAuthHandler();
+const oauthProviderHandlers = createOAuthProviderHandlers(mongoose);
 const authenticateOpenIDCallback = createOpenIDCallbackAuthenticator({
   passport,
   logger,
@@ -59,6 +63,9 @@ router.get('/error', (req, res) => {
 
   redirectToAuthFailure(res, authFailureRedirectOptions);
 });
+
+router.get('/authorize', optionalJwtAuth, oauthProviderHandlers.authorizePage);
+router.post('/authorize', optionalJwtAuth, oauthProviderHandlers.authorizeDecision);
 
 /**
  * Google Routes

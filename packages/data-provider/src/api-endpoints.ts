@@ -1,7 +1,7 @@
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
-import * as q from './types/queries';
 import { ResourceType } from './accessPermissions';
+import * as q from './types/queries';
 
 let BASE_URL = '';
 if (
@@ -100,6 +100,22 @@ const apiKeysEndpoint = `${BASE_URL}/api/api-keys`;
 export const apiKeys = () => apiKeysEndpoint;
 
 export const apiKeyById = (id: string) => `${apiKeysEndpoint}/${id}`;
+
+const oauthEndpoint = `${BASE_URL}/api/oauth`;
+
+export const oauthScopes = () => `${oauthEndpoint}/scopes`;
+
+export const oauthClients = () => `${oauthEndpoint}/clients`;
+
+export const oauthClientById = (clientId: string) =>
+  `${oauthClients()}/${encodeURIComponent(clientId)}`;
+
+export const oauthRotateSecret = (clientId: string) => `${oauthClientById(clientId)}/rotate-secret`;
+
+export const oauthGrants = () => `${oauthEndpoint}/grants`;
+
+export const oauthRevokeGrant = (grantId: string) =>
+  `${oauthGrants()}/${encodeURIComponent(grantId)}/revoke`;
 
 export const conversationsRoot = `${BASE_URL}/api/convos`;
 

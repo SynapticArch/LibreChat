@@ -212,6 +212,7 @@ const startServer = async () => {
    * The reverse proxy / auth gateway sets `X-Tenant-Id` header for multi-tenant deployments. */
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
   /* API Endpoints */
+  app.use('/api/oauth', preAuthTenantMiddleware, routes.oauthProvider);
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
   app.use('/api/admin', routes.adminAuth);
   app.use('/api/admin/config', routes.adminConfig);
