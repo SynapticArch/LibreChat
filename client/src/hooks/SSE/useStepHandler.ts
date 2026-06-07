@@ -20,14 +20,14 @@ import type {
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { AnnounceOptions } from '~/common';
-import { MESSAGE_UPDATE_INTERVAL } from '~/common';
-import { subagentProgressByToolCallId } from '~/store';
 import {
   foldSubagentEvent,
   foldSubagentEventIntoTicker,
   initSubagentAggregatorState,
   initSubagentTickerState,
 } from '~/utils/subagentContent';
+import { subagentProgressByToolCallId } from '~/store';
+import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 
 type TUseStepHandler = {
   announcePolite: (options: AnnounceOptions) => void;
@@ -62,6 +62,18 @@ type AllContentTypes =
   | ContentTypes.IMAGE_URL
   | ContentTypes.SUMMARY
   | ContentTypes.ERROR;
+
+const isOAuthToolCallName = (name?: string) =>
+  typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
+
+const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
+  if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) {
+    return false;
+  }
+  const { tool_call: toolCall } = part;
+  const name = toolCall != null && 'name' in toolCall ? toolCall.name : undefined;
+  return isOAuthToolCallName(name);
+};
 
 export default function useStepHandler({
   setMessages,
@@ -99,6 +111,14 @@ export default function useStepHandler({
    * `atomFamily` — atoms persist for the app lifetime.
    */
   const knownSubagentAtomKeys = useRef(new Set<string>());
+
+  const getCurrentMessages = useCallback(
+    (messages: TMessage[]) => {
+      const freshMessages = getMessages();
+      return freshMessages && freshMessages.length >= messages.length ? freshMessages : messages;
+    },
+    [getMessages],
+  );
 
   /** Both content parts and ticker lines are aggregated incrementally
    *  into the atom as each `ON_SUBAGENT_UPDATE` arrives — we never
@@ -270,9 +290,20 @@ export default function useStepHandler({
       return message;
     }
 
-    const updatedContent = [...(message.content || [])] as Array<
+    const incomingOAuthToolCall =
+      contentType === ContentTypes.TOOL_CALL &&
+      'tool_call' in contentPart &&
+      isOAuthToolCallName(contentPart.tool_call?.name);
+
+    let updatedContent = [...(message.content || [])] as Array<
       Partial<TMessageContentParts> | undefined
     >;
+
+    const oauthPromptOccupiesSlot = isOAuthToolCallContent(updatedContent[index]);
+    if (!incomingOAuthToolCall && oauthPromptOccupiesSlot) {
+      updatedContent = updatedContent.filter((part) => !isOAuthToolCallContent(part));
+    }
+
     if (!updatedContent[index] && contentType !== ContentTypes.TOOL_CALL) {
       updatedContent[index] = { type: contentPart.type as AllContentTypes };
     }
@@ -517,9 +548,15 @@ export default function useStepHandler({
           });
 
           messageMap.current.set(responseMessageId, updatedResponse);
-          const updatedMessages = messages.map((msg) =>
-            msg.messageId === responseMessageId ? updatedResponse : msg,
+          const currentMessages = getCurrentMessages(messages);
+          const hasResponseMessage = currentMessages.some(
+            (msg) => msg.messageId === responseMessageId,
           );
+          const updatedMessages = hasResponseMessage
+            ? currentMessages.map((msg) =>
+                msg.messageId === responseMessageId ? updatedResponse : msg,
+              )
+            : [...currentMessages, updatedResponse];
 
           setMessages(updatedMessages);
         }
@@ -724,9 +761,15 @@ export default function useStepHandler({
           });
 
           messageMap.current.set(responseMessageId, updatedResponse);
-          const updatedMessages = messages.map((msg) =>
-            msg.messageId === responseMessageId ? updatedResponse : msg,
+          const currentMessages = getCurrentMessages(messages);
+          const hasResponseMessage = currentMessages.some(
+            (msg) => msg.messageId === responseMessageId,
           );
+          const updatedMessages = hasResponseMessage
+            ? currentMessages.map((msg) =>
+                msg.messageId === responseMessageId ? updatedResponse : msg,
+              )
+            : [...currentMessages, updatedResponse];
 
           setMessages(updatedMessages);
         }
@@ -767,9 +810,15 @@ export default function useStepHandler({
           );
 
           messageMap.current.set(responseMessageId, updatedResponse);
-          const updatedMessages = messages.map((msg) =>
-            msg.messageId === responseMessageId ? updatedResponse : msg,
+          const currentMessages = getCurrentMessages(messages);
+          const hasResponseMessage = currentMessages.some(
+            (msg) => msg.messageId === responseMessageId,
           );
+          const updatedMessages = hasResponseMessage
+            ? currentMessages.map((msg) =>
+                msg.messageId === responseMessageId ? updatedResponse : msg,
+              )
+            : [...currentMessages, updatedResponse];
 
           setMessages(updatedMessages);
         }
@@ -883,6 +932,7 @@ export default function useStepHandler({
       announcePolite,
       setMessages,
       calculateContentIndex,
+      getCurrentMessages,
       applySubagentUpdate,
     ],
   );

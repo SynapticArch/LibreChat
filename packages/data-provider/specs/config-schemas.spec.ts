@@ -3,6 +3,7 @@ import {
   agentsEndpointSchema,
   azureEndpointSchema,
   endpointSchema,
+  RetentionMode,
   configSchema,
   interfaceSchema,
   fileStorageSchema,
@@ -690,6 +691,16 @@ describe('interfaceSchema', () => {
     expect(result).not.toHaveProperty('sidePanel');
     expect(result.modelSelect).toBe(false);
   });
+
+  it('accepts retainAgentFiles with all-data retention', () => {
+    const result = interfaceSchema.parse({
+      retentionMode: RetentionMode.ALL,
+      retainAgentFiles: true,
+    });
+
+    expect(result.retentionMode).toBe(RetentionMode.ALL);
+    expect(result.retainAgentFiles).toBe(true);
+  });
 });
 
 describe('summarizationTriggerSchema', () => {
@@ -825,6 +836,7 @@ describe('specsConfigSchema', () => {
           name: 'spec-1',
           label: 'Spec 1',
           hideBadgeRow: true,
+          softDefault: true,
           preset: { endpoint: EModelEndpoint.openAI },
         },
       ],
@@ -832,6 +844,7 @@ describe('specsConfigSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.list[0].hideBadgeRow).toBe(true);
+      expect(result.data.list[0].softDefault).toBe(true);
     }
   });
 
