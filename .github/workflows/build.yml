@@ -92,13 +92,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      - name: Install Node.js dependencies
+      - name: Prepare deployment runner
         run: |
-          npm install --no-save --package-lock=false --no-audit --no-fund ssh2 dotenv axios form-data@^4.0.4
-
-      - name: Set script permissions
-        run: |
-          chmod +x scripts/deploy_image.js
+          DEPLOY_DIR="$RUNNER_TEMP/librechat-deploy-runner"
+          rm -rf "$DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+          cp scripts/deploy_image.js "$DEPLOY_DIR/deploy_image.js"
+          cd "$DEPLOY_DIR"
+          npm init -y
+          npm install --no-save --package-lock=false --no-audit --no-fund ssh2 dotenv axios form-data
+          chmod +x deploy_image.js
+          echo "DEPLOY_DIR=$DEPLOY_DIR" >> "$GITHUB_ENV"
 
       - name: Run deployment script
         if: github.event_name != 'pull_request' || github.actor == 'Chloemlla'
@@ -111,4 +115,5 @@ jobs:
           IMAGE_URL: happyclo/librechat:${{ steps.timestamp.outputs.short_sha }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
-          node scripts/deploy_image.js
+          cd "$DEPLOY_DIR"
+          node deploy_image.js
