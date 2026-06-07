@@ -94,7 +94,7 @@ jobs:
 
       - name: Install Node.js dependencies
         run: |
-          npm install --no-save --package-lock=false --no-audit --no-fund ssh2 dotenv axios form-data
+          npm install --no-save --package-lock=false --no-audit --no-fund ssh2 dotenv axios form-data@^4.0.4
 
       - name: Set script permissions
         run: |
